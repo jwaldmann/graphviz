@@ -382,7 +382,7 @@ rmTransEdges es = concatMap (map snd . outgoing) $ Map.elems esM
 
     esMS = do edgeGraph tes
               ns <- getsMap Map.keys
-              mapM_ (traverse zeroTag) ns
+              mapM_ (Data.GraphViz.Algorithms.traverse zeroTag) ns
 
     esM = fst $ execState esMS (Map.empty, Set.empty)
 
@@ -471,4 +471,4 @@ traverse t n = do setMark True
                              delSet <- getSet
                              let n' = toNode e
                              unless (isMarked m n' || t' `Set.member` delSet)
-                               $ traverse t' n'
+                               $ Data.GraphViz.Algorithms.traverse t' n'
