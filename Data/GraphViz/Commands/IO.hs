@@ -38,7 +38,7 @@ import Text.PrettyPrint.Leijen.Text (displayT, renderOneLine)
 import           Control.Concurrent        (MVar, forkIO, newEmptyMVar, putMVar,
                                             takeMVar)
 import           Control.Exception         (IOException, evaluate, finally)
-import           Control.Monad             (liftM)
+import           Control.Monad             (liftM, unless)
 import           Control.Monad.Trans.State
 import qualified Data.ByteString           as SB
 import           Data.ByteString.Lazy      (ByteString)
@@ -46,8 +46,11 @@ import qualified Data.ByteString.Lazy      as B
 import           Data.Text.Encoding.Error  (UnicodeException)
 import           Data.Text.Lazy            (Text)
 import qualified Data.Text.Lazy.Encoding   as T
+import           System.Directory          (canonicalizePath, doesFileExist,
+                                            executable, findExecutable,
+                                            getHomeDirectory, getPermissions)
 import           System.Exit               (ExitCode (ExitSuccess))
-import           System.FilePath           ((<.>))
+import           System.FilePath           (joinPath, splitDirectories, (<.>))
 import           System.IO                 (Handle,
                                             IOMode (ReadMode, WriteMode),
                                             hClose, hGetContents, hPutChar,
@@ -152,8 +155,11 @@ runCommand :: (PrintDotRepr dg n)
               -> (Handle -> IO a) -- ^ Obtaining the output; should be strict.
               -> dg n
               -> IO a
-runCommand cmd args hf dg
-  = mapException notRunnable $
+runCommand cmd args hf dg = do
+  isEx <- isExecutable cmd
+  unless isEx (throw $ CmdNotFound cmd)
+
+  mapException notRunnable $
     withSystemTempFile ("graphviz" <.> "gv") $ \dotFile dotHandle -> do
       finally (hPutCompactDot dotHandle dg) (hClose dotHandle)
       bracket
@@ -214,3 +220,41 @@ hGetContents' h = do r <- hGetContents h
 -- | Store the result of the 'Handle' consumption into the 'MVar'.
 signalWhenDone        :: (Handle -> IO a) -> Handle -> MVar a -> IO ()
 signalWhenDone f h mv = f h >>= putMVar mv >> return ()
+
+canonicalizeExecutable :: String -> IO (Maybe FilePath)
+canonicalizeExecutable cmd = liftMaybePlus (findExecutable cmd) checkPath
+  where
+    -- Check to see if it's an explicitly listed command
+    checkPath = handle noSuchFile $
+                  do fp <- canonicalizePath' cmd
+                     prm <- getPermissions fp
+                     if executable prm
+                        then return (Just fp)
+                        else return Nothing
+
+    noSuchFile :: IOException -> IO (Maybe FilePath)
+    noSuchFile = const (return Nothing)
+
+isExecutable :: FilePath -> IO Bool
+isExecutable cmd = findExecutable cmd >>= maybe checkPath (const (return True))
+  where
+    -- Check to see if it's an explicitly listed command
+    checkPath = handle noSuchFile $
+                  do fp <- canonicalizePath' cmd
+                     ex <- doesFileExist fp
+                     if ex
+                        then executable `fmap` getPermissions fp
+                        else return False
+
+    noSuchFile :: IOException -> IO Bool
+    noSuchFile = const (return False)
+
+liftMaybePlus :: IO (Maybe a) -> IO (Maybe a) -> IO (Maybe a)
+liftMaybePlus mm1 mm2 = mm1 >>= maybe mm2 (return . Just)
+
+canonicalizePath' :: FilePath -> IO FilePath
+canonicalizePath' fp = do fp' <- case splitDirectories fp of
+                                   "~":ds -> do hd <- getHomeDirectory
+                                                return (joinPath (hd:ds))
+                                   _      -> return fp
+                          canonicalizePath fp'
